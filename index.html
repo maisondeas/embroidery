@@ -90,7 +90,9 @@ header p{color:var(--rose);font-size:.9rem;letter-spacing:.06em;margin-top:.3rem
 .brand-panel{display:none;}.brand-panel.active{display:block;}
 .color-list{display:flex;flex-direction:column;gap:.65rem;}
 .color-row{background:var(--warm);border:1px solid var(--border);border-radius:4px;display:flex;align-items:stretch;overflow:hidden;}
-.row-rank{width:32px;display:flex;align-items:center;justify-content:center;font-size:.8rem;color:var(--muted);font-weight:500;flex-shrink:0;border-right:1px solid var(--border);}
+.row-rank{width:38px;display:flex;align-items:center;justify-content:center;font-size:.78rem;color:var(--brown);font-weight:600;flex-shrink:0;border-right:1px solid var(--border);cursor:pointer;}
+.color-row{cursor:pointer;transition:.15s;}
+.color-row.pin-active{border-color:var(--rose);box-shadow:0 0 0 2px var(--rose);background:#FBF3EE;}
 .row-swatches{display:flex;flex-direction:column;width:64px;flex-shrink:0;}
 .swatch-h{flex:1;position:relative;}
 .swatch-label{position:absolute;bottom:2px;left:3px;font-size:.65rem;background:rgba(0,0,0,.3);color:#fff;padding:1px 4px;border-radius:2px;}
@@ -304,11 +306,6 @@ header p{color:var(--rose);font-size:.9rem;letter-spacing:.06em;margin-top:.3rem
 </style>
 </head>
 <body>
-
-<header>
-  <h1>MAISONDEAS Embroidery</h1>
-  <p>お手持ちの刺繍糸の管理。画像から近い糸番号を検索・在庫照会ができます。</p>
-</header>
 
 <nav class="app-tabs">
   <button class="app-tab active" data-tab="inventory">🗃️ 刺繍糸管理</button>
@@ -848,7 +845,7 @@ function findBest(r,g,b,db){
   for(const d of db){const[dr,dg,db2]=hexToRgb(d.h);const delta=deltaE(lab,rgbToLab(dr,dg,db2));if(delta<bd){bd=delta;best=d;}}
   return{thread:best,delta:bd};
 }
-function kMeansWithCount(pixels,k,iters=15){
+function kMeansWithCount(pixels,k,iters=15,coords=null){
   let centers=[];const used=new Set();
   while(centers.length<k){const i=Math.floor(Math.random()*pixels.length);if(!used.has(i)){used.add(i);centers.push([...pixels[i]]);}}
   let assign=new Array(pixels.length).fill(0);
@@ -858,7 +855,17 @@ function kMeansWithCount(pixels,k,iters=15){
     centers=cl.map((c,i)=>c.length?[Math.round(c.reduce((s,p)=>s+p[0],0)/c.length),Math.round(c.reduce((s,p)=>s+p[1],0)/c.length),Math.round(c.reduce((s,p)=>s+p[2],0)/c.length)]:centers[i]);
   }
   const counts=new Array(k).fill(0);for(const a of assign)counts[a]++;
-  return centers.map((c,i)=>({rgb:c,count:counts[i],pct:counts[i]/pixels.length*100}));
+  // 各クラスタで、重心色に最も近いピクセルの座標を代表点とする
+  const bestDist=new Array(k).fill(Infinity);
+  const points=new Array(k).fill(null);
+  if(coords){
+    for(let pi=0;pi<pixels.length;pi++){
+      const a=assign[pi],px=pixels[pi],c=centers[a];
+      const d=(px[0]-c[0])**2+(px[1]-c[1])**2+(px[2]-c[2])**2;
+      if(d<bestDist[a]){bestDist[a]=d;points[a]=coords[pi];}
+    }
+  }
+  return centers.map((c,i)=>({rgb:c,count:counts[i],pct:counts[i]/pixels.length*100,point:points[i]}));
 }
 
 // ══════════════════════════════════════════════
@@ -913,7 +920,9 @@ const maskHole=document.getElementById('mask-hole');
 const selRect=document.getElementById('sel-rect');
 const dragRect=document.getElementById('drag-rect');
 let img=null,zoom=1,offsetX=0,offsetY=0,selection=null,mode='pan';
-let panStart=null,panOffset0=null,selDragStart=null,pinchDist0=null,pinchZoom0=null;
+let pinPoints=[];      // 各抽出色の画像上の代表座標 [[x,y],...]
+let activePin=-1;      // 強調表示中のピン番号(-1=なし)
+let panStart=null,panOffset0=null,selDragStart=null,pinchDist0=null,pinchZoom0=null,tapStart=null;
 
 function clampOffset(){
   const vpW=viewport.clientWidth,vpH=viewport.clientHeight;
@@ -947,18 +956,63 @@ function render(){
     dimRect.setAttribute('visibility','visible');
     selRect.setAttribute('x',sx);selRect.setAttribute('y',sy);selRect.setAttribute('width',sw);selRect.setAttribute('height',sh);selRect.setAttribute('visibility','visible');
   }else{dimRect.setAttribute('visibility','hidden');selRect.setAttribute('visibility','hidden');}
+  drawPins();
+}
+// 抽出色のピンをcanvas上に描画(ズーム・パンに追従)
+function drawPins(){
+  if(!pinPoints||!pinPoints.length)return;
+  pinPoints.forEach((pt,i)=>{
+    if(!pt)return;
+    const x=pt[0]*zoom+offsetX, y=pt[1]*zoom+offsetY;
+    if(x<-20||y<-20||x>viewCanvas.width+20||y>viewCanvas.height+20)return;
+    const isActive=(i===activePin);
+    const r=isActive?15:11;
+    // 外側の白フチ
+    vCtx.beginPath();vCtx.arc(x,y,r+2,0,Math.PI*2);
+    vCtx.fillStyle=isActive?'rgba(196,134,106,1)':'rgba(255,255,255,.95)';
+    vCtx.fill();
+    // 内側の丸(番号背景)
+    vCtx.beginPath();vCtx.arc(x,y,r,0,Math.PI*2);
+    vCtx.fillStyle=isActive?'#C4866A':'#5C3D2E';
+    vCtx.fill();
+    // 番号
+    vCtx.fillStyle='#fff';
+    vCtx.font=`600 ${isActive?13:11}px 'Noto Sans JP',sans-serif`;
+    vCtx.textAlign='center';vCtx.textBaseline='middle';
+    vCtx.fillText(String(i+1),x,y+.5);
+  });
 }
 function vpToImg(vx,vy){return{x:(vx-offsetX)/zoom,y:(vy-offsetY)/zoom};}
 function evPos(e,idx=0){const r=viewport.getBoundingClientRect();const s=e.touches?e.touches[idx]:e;return{x:s.clientX-r.left,y:s.clientY-r.top};}
+// ビューポート上の座標に近いピンの番号を返す(なければ-1)
+function pinAt(vx,vy){
+  for(let i=0;i<pinPoints.length;i++){
+    const pt=pinPoints[i];if(!pt)continue;
+    const x=pt[0]*zoom+offsetX,y=pt[1]*zoom+offsetY;
+    if(Math.hypot(vx-x,vy-y)<=16)return i;
+  }
+  return -1;
+}
+// ピンがタップされたら該当カードまでスクロールして強調
+function tapPin(i){
+  focusPin(i);
+  if(activePin===i){
+    const card=document.querySelector('.brand-panel.active .color-row[data-pin="'+i+'"]');
+    if(card)card.scrollIntoView({behavior:'smooth',block:'center'});
+  }
+}
 
 viewport.addEventListener('wheel',e=>{e.preventDefault();const p=evPos(e);applyZoom(zoom*(e.deltaY>0?0.85:1/0.85),p.x,p.y);},{passive:false});
-viewport.addEventListener('mousedown',e=>{e.preventDefault();const p=evPos(e);if(mode==='pan'){panStart=p;panOffset0={x:offsetX,y:offsetY};}else{const ip=vpToImg(p.x,p.y);selDragStart={vx:p.x,vy:p.y,ix:ip.x,iy:ip.y};}});
+viewport.addEventListener('mousedown',e=>{e.preventDefault();const p=evPos(e);tapStart=p;if(mode==='pan'){panStart=p;panOffset0={x:offsetX,y:offsetY};}else{const ip=vpToImg(p.x,p.y);selDragStart={vx:p.x,vy:p.y,ix:ip.x,iy:ip.y};}});
 window.addEventListener('mousemove',e=>{
   if(mode==='pan'&&panStart){const p=evPos(e);offsetX=panOffset0.x+(p.x-panStart.x);offsetY=panOffset0.y+(p.y-panStart.y);clampOffset();render();}
   else if(mode==='sel'&&selDragStart){const p=evPos(e);dragRect.setAttribute('x',Math.min(selDragStart.vx,p.x));dragRect.setAttribute('y',Math.min(selDragStart.vy,p.y));dragRect.setAttribute('width',Math.abs(p.x-selDragStart.vx));dragRect.setAttribute('height',Math.abs(p.y-selDragStart.vy));dragRect.setAttribute('visibility','visible');}
 });
 window.addEventListener('mouseup',e=>{
-  if(mode==='pan'&&panStart){panStart=null;}
+  if(mode==='pan'&&panStart){
+    panStart=null;
+    if(tapStart){const p=evPos(e);if(Math.hypot(p.x-tapStart.x,p.y-tapStart.y)<5){const pi=pinAt(p.x,p.y);if(pi!==-1)tapPin(pi);}}
+  }
   else if(mode==='sel'&&selDragStart){
     const p=evPos(e);const ip=vpToImg(p.x,p.y);
     const ix=Math.min(selDragStart.ix,ip.x),iy=Math.min(selDragStart.iy,ip.y);
@@ -972,7 +1026,7 @@ window.addEventListener('mouseup',e=>{
 viewport.addEventListener('touchstart',e=>{
   e.preventDefault();
   if(e.touches.length===2){panStart=null;selDragStart=null;pinchDist0=Math.hypot(evPos(e,0).x-evPos(e,1).x,evPos(e,0).y-evPos(e,1).y);pinchZoom0=zoom;}
-  else{const p=evPos(e);pinchDist0=null;if(mode==='pan'){panStart=p;panOffset0={x:offsetX,y:offsetY};}else{const ip=vpToImg(p.x,p.y);selDragStart={vx:p.x,vy:p.y,ix:ip.x,iy:ip.y};}}
+  else{const p=evPos(e);pinchDist0=null;tapStart=p;if(mode==='pan'){panStart=p;panOffset0={x:offsetX,y:offsetY};}else{const ip=vpToImg(p.x,p.y);selDragStart={vx:p.x,vy:p.y,ix:ip.x,iy:ip.y};}}
 },{passive:false});
 viewport.addEventListener('touchmove',e=>{
   e.preventDefault();
@@ -998,7 +1052,13 @@ viewport.addEventListener('touchend',e=>{
     selection={x:Math.max(0,ix),y:Math.max(0,iy),w:Math.min(iw,img.width-Math.max(0,ix)),h:Math.min(ih,img.height-Math.max(0,iy))};
     document.getElementById('btn-clear-sel').style.display='inline-block';updateHint();render();
   }
-  panStart=null;
+  else if(mode==='pan'&&tapStart){
+    // ドラッグせずにタップした場合はピン判定
+    const t=e.changedTouches[0];const r=viewport.getBoundingClientRect();
+    const vp={x:t.clientX-r.left,y:t.clientY-r.top};
+    if(Math.hypot(vp.x-tapStart.x,vp.y-tapStart.y)<8){const pi=pinAt(vp.x,vp.y);if(pi!==-1)tapPin(pi);}
+  }
+  panStart=null;tapStart=null;
 },{passive:false});
 
 function updateHint(){
@@ -1024,7 +1084,7 @@ function loadFile(file){
   const reader=new FileReader();
   reader.onload=e=>{
     const image=new Image();
-    image.onload=()=>{img=image;selection=null;document.getElementById('btn-clear-sel').style.display='none';document.getElementById('preview-section').style.display='block';document.getElementById('results-section').style.display='none';requestAnimationFrame(()=>{fitImage();updateHint();});};
+    image.onload=()=>{img=image;selection=null;pinPoints=[];activePin=-1;document.getElementById('btn-clear-sel').style.display='none';document.getElementById('preview-section').style.display='block';document.getElementById('results-section').style.display='none';requestAnimationFrame(()=>{fitImage();updateHint();});};
     image.src=e.target.result;
   };
   reader.readAsDataURL(file);
@@ -1044,6 +1104,26 @@ document.querySelectorAll('.brand-tab').forEach(tab=>{
 const offCanvas=document.getElementById('off-canvas');
 const offCtx=offCanvas.getContext('2d');
 
+// 結果カードのタップ、またはピンのタップで対象の色を強調する
+function focusPin(i){
+  activePin=(activePin===i)?-1:i;   // もう一度押すと解除
+  // 全ブランドの同じ番号のカードをハイライト
+  document.querySelectorAll('.color-row').forEach(row=>{
+    row.classList.toggle('pin-active', activePin!==-1 && Number(row.dataset.pin)===activePin);
+  });
+  // 対象ピンが画面外なら中央へ寄せる
+  if(activePin!==-1 && pinPoints[activePin]){
+    const pt=pinPoints[activePin];
+    const vx=pt[0]*zoom+offsetX, vy=pt[1]*zoom+offsetY;
+    if(vx<0||vy<0||vx>viewport.clientWidth||vy>viewport.clientHeight){
+      offsetX=viewport.clientWidth/2-pt[0]*zoom;
+      offsetY=viewport.clientHeight/2-pt[1]*zoom;
+      clampOffset();
+    }
+  }
+  render();
+}
+
 function buildMatchCard(rank,extractedRgb,thread,delta,pct,isBest,brand){
   const hex=toHex(...extractedRgb);
   const bc=delta<10?'delta-great':delta<20?'delta-good':'delta-fair';
@@ -1053,9 +1133,9 @@ function buildMatchCard(rank,extractedRgb,thread,delta,pct,isBest,brand){
   const inStock=hasStock(brand,thread.n);
   const check=inStock?'<span class="check-badge" title="在庫あり">✅</span>':'';
   const stockClass=inStock?' in-stock':'';
-  const buyLink=inStock?'':`<a class="buy-link" href="${buildRakutenLink(brand,thread.n,thread.name)}" target="_blank" rel="noopener sponsored">🛒 楽天で購入</a>`;
-  return `<div class="color-row${isBest?' best-brand':''}${stockClass}">
-    <div class="row-rank">${rank}</div>
+  const buyLink=inStock?'':`<a class="buy-link" href="${buildRakutenLink(brand,thread.n,thread.name)}" target="_blank" rel="noopener sponsored" onclick="event.stopPropagation()">🛒 楽天で購入</a>`;
+  return `<div class="color-row${isBest?' best-brand':''}${stockClass}" data-pin="${rank-1}" onclick="focusPin(${rank-1})">
+    <div class="row-rank" title="画像上のピン${rank}番">📍${rank}</div>
     <div class="row-swatches">
       <div class="swatch-h" style="background:${hex}"><span class="swatch-label">抽出</span></div>
       <div class="swatch-h" style="background:${thread.h}"><span class="swatch-label">糸</span></div>
@@ -1085,6 +1165,7 @@ document.querySelectorAll('.count-btn').forEach(btn => {
 
 document.getElementById('btn-extract').addEventListener('click',()=>{
   if(!img)return;
+  activePin=-1;
   document.getElementById('btn-extract').disabled=true;
   document.getElementById('loading').style.display='block';
   document.getElementById('results-section').style.display='none';
@@ -1096,9 +1177,24 @@ document.getElementById('btn-extract').addEventListener('click',()=>{
     offCanvas.width=Math.max(1,Math.round(sw*scale));offCanvas.height=Math.max(1,Math.round(sh*scale));
     offCtx.drawImage(img,sx,sy,sw,sh,0,0,offCanvas.width,offCanvas.height);
     const data=offCtx.getImageData(0,0,offCanvas.width,offCanvas.height).data;
-    const pixels=[];for(let i=0;i<data.length;i+=4){if(data[i+3]<128)continue;pixels.push([data[i],data[i+1],data[i+2]]);}
-    const sampled=pixels.length>3000?Array.from({length:3000},()=>pixels[Math.floor(Math.random()*pixels.length)]):pixels;
-    const sorted=[...kMeansWithCount(sampled,k)].sort((a,b)=>b.count-a.count);
+    const pixels=[];const coords=[];
+    for(let idx=0,p=0;idx<data.length;idx+=4,p++){
+      if(data[idx+3]<128)continue;
+      pixels.push([data[idx],data[idx+1],data[idx+2]]);
+      // オフスクリーン画像上のxy → 元画像上の絶対座標へ換算
+      const ox=p%offCanvas.width, oy=Math.floor(p/offCanvas.width);
+      coords.push([sx+ox/scale, sy+oy/scale]);
+    }
+    const useAll=pixels.length<=3000;
+    let sampled,sampledCoords;
+    if(useAll){sampled=pixels;sampledCoords=coords;}
+    else{
+      sampled=[];sampledCoords=[];
+      for(let n=0;n<3000;n++){const r=Math.floor(Math.random()*pixels.length);sampled.push(pixels[r]);sampledCoords.push(coords[r]);}
+    }
+    const sorted=[...kMeansWithCount(sampled,k,15,sampledCoords)].sort((a,b)=>b.count-a.count);
+    // ピンの座標を保持(画像絶対座標)
+    pinPoints=sorted.map(item=>item.point);
     const brandKeys=Object.keys(MATCH_BRANDS);
     const allMatches=sorted.map(item=>{
       const m={};for(const[brand,db]of Object.entries(MATCH_BRANDS))m[brand]=findBest(...item.rgb,db);
